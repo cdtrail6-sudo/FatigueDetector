@@ -1,0 +1,32 @@
+allprojects {
+  configurations.all {
+    resolutionStrategy {
+      force "androidx.lifecycle:lifecycle-runtime:2.6.2"
+      force "androidx.lifecycle:lifecycle-process:2.6.2"
+      force "androidx.lifecycle:lifecycle-common:2.6.2"
+      force "androidx.lifecycle:lifecycle-runtime-ktx:2.6.2"
+    }
+  }
+}
+
+buildscript {
+    ext {
+        buildToolsVersion = "34.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 34
+        targetSdkVersion = 34
+        ndkVersion = "26.1.10909125"
+        kotlinVersion = "1.9.22"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle")
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        
+    }
+}
+
+apply plugin: "com.facebook.react.rootproject"

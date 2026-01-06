@@ -1,0 +1,9 @@
+{
+  "extends": "@react-native/typescript-config/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2020"],
+    "types": ["react", "react-native"],
+    "skipLibCheck": true
+  }
+}

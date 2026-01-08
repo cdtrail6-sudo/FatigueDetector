@@ -6,70 +6,90 @@ import {
   Linking,
   StyleSheet,
   AppState,
+  Pressable,
 } from "react-native";
 import { Camera, useCameraDevices } from "react-native-vision-camera";
-import FatigueDetector from "../native/FatigueDetector";
-import { Vibration } from "react-native";
-import { logFatigueWindow } from "../logging/fatigueLogger";
-import { trackFatigue, endSession, startSession } from "../logging/sessionTracker";
-import { useNavigation } from "@react-navigation/native";
-import { FatigueResult } from "../native/FatigueDetector";
+import { useNavigation, useIsFocused } from "@react-navigation/native";
+
+import FatigueDetector, { FatigueResult } from "../native/FatigueDetector";
+import { startSession, endSession } from "../logging/sessionTracker";
+import { FatigueLevel } from "../types/fatigue";
+import { storeWindowLog } from "../storage/fatigueStorage";
+import { maybeTriggerAlert, resetAlertState } from "../alerts/fatigueAlert";
+
 
 type PermissionState = "not-determined" | "granted" | "denied";
 
-const AUTO_SCAN_INTERVAL_MS = 1200;
-const BASELINE_UI_DURATION_MS = 4000;
+const BASELINE_UI_DURATION_MS = 3000;
+const FACE_LOST_GRACE_MS = 800;
 
+/*************  ✨ Windsurf Command ⭐  *************/
+/**
+ * ScanScreen is the main screen of the app. It is responsible for
+ * handling camera permissions, starting and stopping the camera,
+
+/*******  e84c0190-d7cb-466c-b5ef-ff99ab9044db  *******/
 export default function ScanScreen() {
   // ------------------------------------------------
-  // Camera refs
+  // Camera + navigation
   // ------------------------------------------------
   const cameraRef = useRef<Camera | null>(null);
-  const cameraReadyRef = useRef(false);
   const navigation = useNavigation<any>();
+  const isFocused = useIsFocused();
 
   const devices = useCameraDevices();
-  const device = React.useMemo(
-    () => devices.find(d => d.position === "front") ?? null,
-    [devices]
-  );
+  const device = devices.find(d => d.position === "front") ?? null;
+
   // ------------------------------------------------
-  // Permission + activity
+  // Permission + lifecycle
   // ------------------------------------------------
   const [permission, setPermission] =
     useState<PermissionState>("not-determined");
-  const [isActive, setIsActive] = useState(false);
+  const [appState, setAppState] = useState(AppState.currentState);
 
-  const sessionIdRef = useRef(
-  `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
-  );
-  const sessionId = sessionIdRef.current;
+  const isCameraActive =
+    permission === "granted" &&
+    isFocused &&
+    appState === "active";
 
-  const deviceHashRef = useRef(
-    `device_${Math.random().toString(36).slice(2)}`
-  );
-  const deviceHash = deviceHashRef.current;
   // ------------------------------------------------
-  // Fatigue + calibration
+  // Session
   // ------------------------------------------------
+  const sessionId = useRef(
+    `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  ).current;
 
+  // ------------------------------------------------
+  // Fatigue + confidence smoothing
+  // ------------------------------------------------
   const [fatigue, setFatigue] = useState<FatigueResult | null>(null);
+
   const [baselineProgress, setBaselineProgress] = useState(0);
   const baselineStartRef = useRef<number | null>(null);
-  const safeConfidence =
-  fatigue?.confidence != null
-    ? Math.min(1, Math.max(0, fatigue.confidence))
-    : 0;
 
+  const smoothedConfidenceRef = useRef(0);
+  const CONFIDENCE_ALPHA = 0.25;
+
+  const smoothConfidence = (raw: number) => {
+    smoothedConfidenceRef.current =
+      smoothedConfidenceRef.current === 0
+        ? raw
+        : CONFIDENCE_ALPHA * raw +
+          (1 - CONFIDENCE_ALPHA) * smoothedConfidenceRef.current;
+    return smoothedConfidenceRef.current;
+  };
+
+  const safeConfidence =
+    fatigue?.confidence != null
+      ? Math.min(1, Math.max(0, smoothConfidence(fatigue.confidence)))
+      : 0;
 
   // ------------------------------------------------
-  // Auto-scan state
+  // Scan state
   // ------------------------------------------------
   const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isScanningRef = useRef(false);
-
-  const frameCountRef = useRef(0);
-  const startTsRef = useRef<number | null>(null);
+  const lastFaceSeenTsRef = useRef(0);
 
   const stopAutoScan = () => {
     if (scanTimerRef.current) {
@@ -78,80 +98,40 @@ export default function ScanScreen() {
     }
     isScanningRef.current = false;
   };
-  
-  // ------------------------------------------------
-  // Native fatigue state tracking
-  // ------------------------------------------------
-  const DEBUG_7X = __DEV__; // ⛔ flip to const DEBUG_7X = __DEV__; for prod and
-
-  //Alert parameters
-  const ALERT_CONFIDENCE_THRESHOLD = 0.7;
-  const ALERT_COOLDOWN_MS = 3 * 60 * 1000; // 3 minutes
 
   // ------------------------------------------------
   // Permission + lifecycle
   // ------------------------------------------------
   useEffect(() => {
     startSession(sessionId);
-    baselineStartRef.current = null;
-    setBaselineProgress(0);
-
-    let mounted = true;
 
     const ensurePermission = async () => {
       const status = await Camera.getCameraPermissionStatus();
-      if (!mounted) return;
-
       if (status === "granted") {
         setPermission("granted");
-        setIsActive(true);
-        return;
+      } else {
+        const req = await Camera.requestCameraPermission();
+        setPermission(req);
       }
-
-      if (status === "denied") {
-        setPermission("denied");
-        setIsActive(false);
-        return;
-      }
-
-      const result = await Camera.requestCameraPermission();
-      if (!mounted) return;
-
-      setPermission(result);
-      setIsActive(result === "granted");
     };
 
     ensurePermission();
 
-    const sub = AppState.addEventListener("change", state => {
-      if (state === "active") {
+    const sub = AppState.addEventListener("change", next => {
+      setAppState(next);
+
+      if (next !== "active") {
+        stopAutoScan();
+        setFatigue(null);
         baselineStartRef.current = null;
         setBaselineProgress(0);
-        ensurePermission();
-        return;
+        smoothedConfidenceRef.current = 0;
+        lastFaceSeenTsRef.current = 0; // ✅ FIX
+        FatigueDetector.resetState();
       }
-
-      // -------------------------------
-      // App is backgrounded / locked
-      // -------------------------------
-      setIsActive(false);
-      stopAutoScan();
-
-      // ⛔️ Baseline MUST reset (7.5)
-      baselineStartRef.current = null;
-      setBaselineProgress(0);      
-
-      // ⛔️ Confidence & fatigue invalid once continuity breaks
-      setFatigue(null);
-      frameCountRef.current = 0;
-      startTsRef.current = null;
-      FatigueDetector.resetState();
-      
     });
 
-
     return () => {
-      mounted = false;
       sub.remove();
       stopAutoScan();
       endSession(sessionId);
@@ -159,161 +139,110 @@ export default function ScanScreen() {
   }, []);
 
   // ------------------------------------------------
-  // Auto-scan loop
+  // Scan interval
   // ------------------------------------------------
-  
-  // Dynamic scan interval - BATTERY-AWARE SCANNING
-  function getScanInterval(fatigueLevel?: string) {
-    switch (fatigueLevel) {
-      case "HIGH": return 800;
-      case "MEDIUM": return 1200;
-      default: return 2000;
+  function getScanInterval(level?: FatigueLevel) {
+    switch (level) {
+      case "HIGH":
+        return 800;
+      case "MEDIUM":
+        return 1200;
+      default:
+        return 2000;
     }
   }
 
+  // ------------------------------------------------
+  // Auto scan loop
+  // ------------------------------------------------
   useEffect(() => {
-    if (permission !== "granted" || !isActive || !device) {
+    if (!isCameraActive || !device) {
       stopAutoScan();
       return;
     }
 
-    stopAutoScan(); // ⛔ reset interval when fatigue level changes
+    stopAutoScan();
 
     scanTimerRef.current = setInterval(() => {
-      if (!isScanningRef.current) {
-        captureAndAnalyze();
-      }
+      if (!isCameraActive || isScanningRef.current) return;
+      captureAndAnalyze();
     }, getScanInterval(fatigue?.fatigueLevel));
 
     return stopAutoScan;
-  }, [permission, isActive, device, fatigue?.fatigueLevel]);
-  
-  // ------------------------------------------------
-  // Baseline UI progress (FIXED – 7.5 correct)
-  // ------------------------------------------------
+  }, [isCameraActive, device, fatigue?.fatigueLevel]);
 
+  // ------------------------------------------------
+  // Baseline UI
+  // ------------------------------------------------
   useEffect(() => {
     if (!fatigue?.faceDetected) return;
 
-    // -----------------------------
-    // During calibration
-    // -----------------------------
     if (fatigue.isCalibrating) {
       if (!baselineStartRef.current) {
         baselineStartRef.current = Date.now();
       }
-
       const elapsed = Date.now() - baselineStartRef.current;
       setBaselineProgress(
         Math.min(100, (elapsed / BASELINE_UI_DURATION_MS) * 100)
       );
-      return;
+    } else {
+      baselineStartRef.current = null;
+      setBaselineProgress(100);
     }
-
-    // -----------------------------
-    // Calibration finished (native decides)
-    // -----------------------------
-    baselineStartRef.current = null;
-    setBaselineProgress(100);
-
   }, [fatigue?.isCalibrating, fatigue?.faceDetected]);
-  
-  // ------------------------------------------------
-  // Fatigue logging
-  // ------------------------------------------------ 
-  useEffect(() => {
-    if (
-      !fatigue?.faceDetected ||
-      fatigue.isCalibrating ||
-      fatigue.confidence < 0.4
-    ) return;
-
-    logFatigueWindow({
-      sessionId,
-      deviceHash,
-      fatigue,
-      windowDurationMs: 20_000,
-      scanIntervalMs: AUTO_SCAN_INTERVAL_MS,
-      faceDetectedRatio: 1.0,
-    });
-
-    trackFatigue({
-      fatigueLevel: fatigue.fatigueLevel,
-      confidence: safeConfidence,
-    });
-
-  }, [fatigue]);
-
-  // ------------------------------------------------
-  // High fatigue alerting
-  // ------------------------------------------------
-  const lastAlertRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (!fatigue?.faceDetected) return;
-
-    if (
-      fatigue.fatigueLevel === "HIGH" &&
-      fatigue.confidence >= ALERT_CONFIDENCE_THRESHOLD &&
-      Date.now() - lastAlertRef.current > ALERT_COOLDOWN_MS
-    ) {
-      Vibration.vibrate(500);
-      lastAlertRef.current = Date.now();
-    }
-  }, [fatigue]);
-
-  // ------------------------------------------------
-  // Effective FPS calculation - FPS calculation should ignore calibration frames
-  // ------------------------------------------------
-  const effectiveFps =
-    baselineProgress === 100 && startTsRef.current
-      ? frameCountRef.current / ((Date.now() - startTsRef.current) / 1000)
-      : 0;
 
   // ------------------------------------------------
   // Capture + analyze
   // ------------------------------------------------
   const captureAndAnalyze = async () => {
-    if (
-      !cameraRef.current ||
-      !cameraReadyRef.current ||
-      isScanningRef.current ||
-      !isActive ||
-      permission !== "granted"
-    ) {
-      return;
-    }
+    if (!cameraRef.current || !isCameraActive || isScanningRef.current) return;
 
     isScanningRef.current = true;
 
     try {
       const photo = await cameraRef.current.takePhoto({ flash: "off" });
+      if (!photo?.path) return; // ✅ SAFETY
 
-      const result = await FatigueDetector.analyzeFrameFromPath(
-        photo.path
-      );
+      const result = await FatigueDetector.analyzeFrameFromPath(photo.path);
+
+      if (__DEV__) console.log("FatigueResult:", result);
 
       if (result?.faceDetected) {
-        frameCountRef.current += 1;
-        if (!startTsRef.current) {
-          startTsRef.current = Date.now();
-        }
+        lastFaceSeenTsRef.current = Date.now();
       }
 
-      setFatigue(result);
-    } catch (e) {
-      console.warn("Fatigue analyze failed", e);
+      
+      if (result) {
+        setFatigue(result);
+        maybeTriggerAlert(result); // 🚨 ALERT CONSUMER
+        storeWindowLog({
+          sessionId,
+          timestamp: Date.now(),
+          fatigue: result,
+        });
+      }
+
+    } catch {
+      // ignore background / teardown errors
     } finally {
       isScanningRef.current = false;
     }
+  };
 
-      
+  const isFaceLost =
+    isCameraActive &&
+    !fatigue?.faceDetected &&
+    Date.now() - lastFaceSeenTsRef.current > FACE_LOST_GRACE_MS;
+
+  const fatigueStyleMap: Record<FatigueLevel, object> = {
+    LOW: styles.low,
+    MEDIUM: styles.medium,
+    HIGH: styles.high,
   };
 
   // ------------------------------------------------
-  // UI states
+  // UI guards
   // ------------------------------------------------
-  
   if (permission === "not-determined") {
     return (
       <View style={styles.center}>
@@ -323,13 +252,11 @@ export default function ScanScreen() {
   }
 
   if (permission === "denied") {
+    lastFaceSeenTsRef.current = 0; // ✅ FIX
     return (
       <View style={styles.center}>
         <Text>Camera permission denied</Text>
-        <Button
-          title="Open Settings"
-          onPress={Linking.openSettings}
-        />
+        <Button title="Open Settings" onPress={Linking.openSettings} />
       </View>
     );
   }
@@ -343,119 +270,60 @@ export default function ScanScreen() {
   }
 
   // ------------------------------------------------
-  // Camera + overlays
+  // Render
   // ------------------------------------------------
   return (
     <View style={{ flex: 1 }}>
       {__DEV__ && (
-          <Text
-            style={{ color: "#0f0", position: "absolute", top: 40, right: 10 }}
-            onLongPress={() => navigation.navigate("Debug")}
-          >
-            DEBUG
-          </Text>
-        )}
+        <Pressable
+          style={{ position: "absolute", top: 40, right: 10, zIndex: 999 }}
+          onPress={() => navigation.navigate("Debug")}
+        >
+          <Text style={{ color: "#0f0", fontWeight: "bold" }}>DEBUG</Text>
+        </Pressable>
+      )}
+
       <Camera
-        ref={cameraRef as any}
+        ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
-        isActive={isActive && permission === "granted"}
+        isActive={isCameraActive}
         photo
-        onStarted={() => {
-          cameraReadyRef.current = true;
-        }}
-        onStopped={() => {
-          cameraReadyRef.current = false;
-        }}
       />
-      
-      {baselineProgress < 100 && (
-        <View style={styles.calib}>
+
+      {isFaceLost && (
+        <View style={styles.faceLost}>
           <Text style={styles.text}>
-            Calibrating baseline…
-            “The app needs a few seconds to calibrate your normal eye behavior.
-            Confidence increases as more valid data is collected.”
+            Face not detected{"\n"}Align your face
           </Text>
-          <View style={styles.bar}>
-            <View
-              style={[
-                styles.fill,
-                { width: `${baselineProgress}%` },
-              ]}
-            />
-          </View>
         </View>
       )}
 
       {fatigue?.faceDetected &&
-        baselineProgress === 100 && (
-          <View style={styles.hud}>
-            <Text style={styles.text}>
-              EAR: {baselineProgress === 100
-                ? fatigue.avgEAR?.toFixed?.(3)
-                : "--"}
-            </Text>
-            <Text style={styles.text}>
-              Blink/min: {fatigue.blinkRate?.toFixed(1) ?? "--"}
-            </Text>
-            <View style={{
-              position: "absolute",
-              top: 10,
-              right: 10,
-              backgroundColor: "rgba(0,0,0,0.7)",
-              padding: 8,
-              borderRadius: 6,
-            }}>
-              <Text style={styles.text}>
-                Frames: {frameCountRef.current}
-              </Text>
-              <Text style={styles.text}>
-                FPS: {effectiveFps.toFixed(2)}
-              </Text>
-              <Text style={styles.text}>
-                Fatigue: {fatigue.fatigueLevel}
-              </Text>
-              <Text style={styles.text}>
-                Confidence: {(safeConfidence * 100).toFixed(0)}%
-              </Text>
+        fatigue.isCalibrating &&
+        baselineProgress < 100 && (
+          <View style={styles.calib}>
+            <Text style={styles.text}>Calibrating baseline…</Text>
+            <View style={styles.bar}>
+              <View style={[styles.fill, { width: `${baselineProgress}%` }]} />
             </View>
-            <Text
-              style={[
-                styles.badge,
-                fatigue.fatigueLevel === "LOW" && styles.low,
-                fatigue.fatigueLevel === "MEDIUM" &&
-                  styles.medium,
-                fatigue.fatigueLevel === "HIGH" &&
-                  styles.high,
-              ]}
-            >
-              {fatigue.fatigueLevel}
-            </Text>
-          </View>
-          
-        )}
-        
-
-        {DEBUG_7X && fatigue?.faceDetected && (
-          <View style={styles.debug}>
-            <Text style={styles.debugText}>
-              Entropy: {fatigue.blinkEntropy?.toFixed?.(2) ?? "—"}
-            </Text>
-
-            <Text style={styles.debugText}>
-              Blink/min: {fatigue.blinkRate.toFixed(1)}
-            </Text>
-
-            <Text style={styles.debugText}>
-              Confidence: {fatigue.confidence.toFixed(2)}
-            </Text>
-
-            <Text style={styles.debugText}>
-              State: {fatigue.fatigueLevel}
-            </Text>
           </View>
         )}
 
+      {fatigue?.faceDetected && !fatigue.isCalibrating && (
+        <View style={styles.hud}>
+          <Text style={styles.text}>EAR: {fatigue.avgEAR.toFixed(3)}</Text>
+          <Text style={styles.text}>
+            Blink/min: {fatigue.blinkRate.toFixed(1)}
+          </Text>
+          <Text style={styles.text}>
+            Confidence: {(safeConfidence * 100).toFixed(0)}%
+          </Text>
+          <Text style={[styles.badge, fatigueStyleMap[fatigue.fatigueLevel]]}>
+            {fatigue.fatigueLevel}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -464,11 +332,7 @@ export default function ScanScreen() {
 // Styles
 // ------------------------------------------------
 const styles = StyleSheet.create({
-  center: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
+  center: { flex: 1, justifyContent: "center", alignItems: "center" },
   hud: {
     position: "absolute",
     top: 40,
@@ -477,41 +341,23 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
   },
-  debug: {
-    position: "absolute",
-    bottom: 40,
-    alignSelf: "center",
-    backgroundColor: "rgba(0,0,0,0.85)",
-    padding: 10,
-    borderRadius: 8,
-  },
-
-  debugText: {
-    color: "#0f0",
-    fontSize: 12,
-    textAlign: "center",
-  },
   calib: {
     position: "absolute",
     bottom: 120,
-    alignSelf: "center",
     width: "80%",
+    alignSelf: "center",
   },
-  bar: {
-    height: 8,
-    backgroundColor: "#333",
-    borderRadius: 4,
-    overflow: "hidden",
-    marginTop: 6,
+  bar: { height: 8, backgroundColor: "#333", borderRadius: 4, marginTop: 6 },
+  fill: { height: "100%", backgroundColor: "#4CAF50" },
+  faceLost: {
+    position: "absolute",
+    top: "45%",
+    alignSelf: "center",
+    backgroundColor: "rgba(0,0,0,0.75)",
+    padding: 16,
+    borderRadius: 10,
   },
-  fill: {
-    height: "100%",
-    backgroundColor: "#4CAF50",
-  },
-  text: {
-    color: "#fff",
-    textAlign: "center",
-  },
+  text: { color: "#fff", textAlign: "center" },
   badge: {
     marginTop: 6,
     paddingHorizontal: 12,

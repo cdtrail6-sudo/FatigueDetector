@@ -14,14 +14,18 @@ const fatigueCounts: Record<FatigueLevel, number> = {
   HIGH: 0,
 };
 
-export function trackFatigue(fatigue: {
+export function trackFatigue({
+  fatigueLevel,
+  confidence,
+}: {
   fatigueLevel: FatigueLevel;
   confidence: number;
 }) {
-  fatigueCounts[fatigue.fatigueLevel]++;
-  confidenceSum += fatigue.confidence;
+  fatigueCounts[fatigueLevel]++;
+  confidenceSum += confidence;
   count++;
 }
+
 
 export function startSession(sessionId: string) {
   startTime = Date.now();

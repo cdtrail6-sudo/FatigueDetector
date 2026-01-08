@@ -47,7 +47,7 @@ public class MainApplication extends MultiDexApplication implements ReactApplica
 
         @Override
         protected boolean isNewArchEnabled() {
-          return BuildConfig.IS_NEW_ARCHITECTURE_ENABLED;
+          return false;
         }
 
         @Override

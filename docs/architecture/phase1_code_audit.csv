@@ -1,0 +1,40 @@
+Category,File Path,Status,Reason
+Android Native Core,mobile/android/app/src/main/java/com/fatiguedetector/app/bridge/FatigueDetectorModule.java,KEEP,Primary JS-Native bridge for fatigue analysis
+Android Native Core,mobile/android/app/src/main/java/com/fatiguedetector/app/bridge/FatigueDetectorPackage.java,KEEP,Registers native module with React Native
+Android Native Core,mobile/android/app/src/main/java/com/fatiguedetector/app/mediapipe/MediaPipeFaceLandmarker.java,KEEP,Native MediaPipe fatigue analysis logic
+Android Native Core,mobile/android/app/src/main/java/com/fatiguedetector/app/mediapipe/MediaPipeFaceLandmarker.kt,KEEP,MediaPipe landmarker support code
+
+Mobile JS Core,mobile/src/native/FatigueDetector.ts,KEEP,JS interface to native fatigue module
+Mobile JS Core,mobile/src/screens/ScanScreen.tsx,KEEP,Primary scanning UI and orchestration
+Mobile JS Core,mobile/src/logging/fatigueLogger.ts,KEEP,Window-level fatigue logging
+Mobile JS Core,mobile/src/logging/sessionTracker.ts,KEEP,Session-level aggregation and lifecycle
+Mobile JS Core,mobile/src/logging/schemas.ts,KEEP,Logging schema definitions
+Mobile JS Core,mobile/src/logging/dataQualityTracker.ts,KEEP,Data quality metrics for debugging
+Mobile JS Core,mobile/src/storage/fatigueStorage.ts,KEEP,Local dev storage for logs
+Mobile JS Core,mobile/src/types/fatigue.ts,KEEP,Shared fatigue type definitions
+Mobile JS Core,mobile/src/constants/fatigueConfig.ts,KEEP,Central fatigue thresholds and timings
+
+Mobile JS (Future),mobile/src/orchestrator/FatiguePipeline.ts,FUTURE,Old JS orchestration not used in Phase-1
+Mobile JS (Future),mobile/src/orchestrator/FatiguePipelineRunner.ts,FUTURE,Legacy pipeline runner
+Mobile JS (Future),mobile/src/services/fatigue_service/FatigueService.ts,FUTURE,JS-side fatigue service (not active)
+Mobile JS (Future),mobile/src/services/fatigue_service/RuleBasedFatigueService.ts,FUTURE,Rule-based JS fatigue logic
+Mobile JS (Future),mobile/src/services/landmark-service/LandmarkService.ts,FUTURE,Abstract landmark service
+Mobile JS (Future),mobile/src/services/landmark-service/MockLandmarkService.ts,FUTURE,Mock landmark generator
+Mobile JS (Future),mobile/src/services/landmark-service/index.ts,FUTURE,Landmark service exports
+
+Legacy JS Pipeline,mobile/src/camera/CameraView.tsx,REMOVE,Unused JS camera abstraction
+Legacy JS Pipeline,mobile/src/camera/frameBuffer.ts,REMOVE,Frame buffering no longer used
+Legacy JS Pipeline,mobile/src/camera/useFramePipeline.ts,REMOVE,Old VisionCamera frame pipeline
+Legacy JS Pipeline,mobile/src/contracts/FrameContract.ts,REMOVE,Frame contract unused
+Legacy JS Pipeline,mobile/src/hooks/useEMA.ts,REMOVE,EMA smoothing unused
+Legacy JS Pipeline,mobile/src/utils/blinkDetector.ts,REMOVE,JS blink detection obsolete
+Legacy JS Pipeline,mobile/src/utils/blinkWindow.ts,REMOVE,Legacy blink window logic
+Legacy JS Pipeline,mobile/src/utils/fatigueSmoothing.ts,REMOVE,JS-side fatigue smoothing obsolete
+Legacy JS Pipeline,mobile/src/utils/imageToBase64.ts,REMOVE,Base64 conversion no longer required
+
+Backend Python (Phase-2+),backend/app/routes/vision_fatigue.py,REMOVE,Backend inference not used in Phase-1
+Backend Python (Phase-2+),backend/app/services/fatigue_service/blink_detector.py,REMOVE,Backend-only fatigue logic
+Backend Python (Phase-2+),backend/app/services/fatigue_service/ear_utils.py,REMOVE,Backend-only EAR utilities
+Backend Python (Phase-2+),backend/app/services/fatigue_service/fatigue_scoring.py,REMOVE,Backend fatigue scoring
+Backend Python (Phase-2+),backend/app/services/fatigue_service/mediapipe_fatigue.py,REMOVE,Backend MediaPipe logic
+Backend Python (Phase-2+),backend/app/utils/image_utils.py,REMOVE,Backend image utilities

@@ -77,3 +77,23 @@ To learn more about React Native, take a look at the following resources:
 - [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
 - [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
 - [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+
+PHASE-1 LOCKED ✅
+
+Capabilities:
+• Temporal fatigue detection
+• Anti-fake behavioral validation
+• Personal baseline calibration
+• Stability-aware confidence
+• Confidence-gated fatigue alerts
+
+Guarantees:
+• No alerts without trust
+• No alerts during calibration
+• No alerts on unstable input
+
+Deferred:
+• Battery optimization
+• Background alerts
+• Backend upload
+• Head-pose entropy

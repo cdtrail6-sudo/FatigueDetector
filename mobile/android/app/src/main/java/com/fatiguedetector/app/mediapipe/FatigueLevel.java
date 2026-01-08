@@ -5,5 +5,4 @@ public enum FatigueLevel {
   MEDIUM,
   HIGH
 }
-result.putString("fatigueLevel", r.fatigueLevel.name());
 

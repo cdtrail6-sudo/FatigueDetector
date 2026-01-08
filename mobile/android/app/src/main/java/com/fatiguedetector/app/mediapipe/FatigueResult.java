@@ -1,46 +1,61 @@
 package com.fatiguedetector.app.mediapipe;
 
-public class FatigueResult {
+import androidx.annotation.NonNull;
 
-  // Detection
-  public boolean faceDetected;
-  public boolean isCalibrating;
+/**
+ * Immutable fatigue analysis result.
+ * MUST stay in sync with FatigueDetector.ts FatigueResult type.
+ */
+public final class FatigueResult {
 
+  // -------------------------------------------------
+  // Core flags
+  // -------------------------------------------------
+  public final boolean faceDetected;
+  public final boolean isCalibrating;
+
+  // -------------------------------------------------
   // Eye metrics
-  public double leftEAR;
-  public double rightEAR;
-  public double avgEAR;
+  // -------------------------------------------------
+  public final double leftEAR;
+  public final double rightEAR;
+  public final double avgEAR;
 
+  // -------------------------------------------------
   // Blink metrics
-  public boolean blinkDetected;
-  public double blinkRate;
-  public double blinkEntropy;
+  // -------------------------------------------------
+  public final boolean blinkDetected;
+  public final double blinkRate;
+  public final double blinkEntropy;
 
+  // -------------------------------------------------
   // Fatigue metrics
-  public double perclos;
+  // -------------------------------------------------
+  public final double perclos;
+  public final FatigueLevel fatigueLevel;
+  public final double confidence;
 
-  // Classification
-  public FatigueLevel fatigueLevel;
-
-  // Trust
-  public double confidence;
-
+  // -------------------------------------------------
   // Timestamp
-  public long timestamp;
+  // -------------------------------------------------
+  public final long timestamp;
 
+  // -------------------------------------------------
+  // Constructor
+  // -------------------------------------------------
   public FatigueResult(
-    boolean faceDetected,
-    boolean isCalibrating,
-    double leftEAR,
-    double rightEAR,
-    double avgEAR,
-    boolean blinkDetected,
-    double blinkRate,
-    double blinkEntropy,
-    double perclos,
-    FatigueLevel fatigueLevel,
-    double confidence,
-    long timestamp
+      boolean faceDetected,
+      boolean isCalibrating,
+      double leftEAR,
+      double rightEAR,
+      double avgEAR,
+      boolean blinkDetected,
+      double blinkRate,
+      double blinkEntropy,
+      double perclos,
+      @NonNull FatigueLevel fatigueLevel,
+      double confidence,
+      long timestamp
   ) {
     this.faceDetected = faceDetected;
     this.isCalibrating = isCalibrating;
@@ -56,46 +71,71 @@ public class FatigueResult {
     this.timestamp = timestamp;
   }
 
-  // ---------------------------------------------
-  // FACTORY: No face detected
-  // ---------------------------------------------
-  public static FatigueResult noFace(long ts) {
+  // -------------------------------------------------
+  // Factory helpers
+  // -------------------------------------------------
+
+  /** Returned when no face is detected */
+  public static FatigueResult noFace(long timestamp) {
     return new FatigueResult(
-      false,        // faceDetected
-      false,        // isCalibrating
-      0, 0, 0,      // EARs
-      false,        // blinkDetected
-      0,            // blinkRate
-      -1,           // blinkEntropy (invalid)
-      0,            // perclos
-      FatigueLevel.LOW,
-      0,            // confidence
-      ts
+        false,
+        false,
+        0.0,
+        0.0,
+        0.0,
+        false,
+        0.0,
+        -1.0,
+        0.0,
+        FatigueLevel.LOW,
+        0.0,
+        timestamp
     );
   }
 
-  // ---------------------------------------------
-  // FACTORY: Baseline calibration
-  // ---------------------------------------------
+  /**
+ * HOLD = temporary landmark loss within grace window.
+ * Face is still considered present.
+ * Confidence must NOT increase during HOLD.
+ */
+  public static FatigueResult hold(long ts) {
+    return new FatigueResult(
+        true,     // faceDetected (or true, your choice)
+        false,     // isCalibrating
+        0.0,
+        0.0,
+        0.0,
+        false,
+        0.0,
+        -1.0,
+        0.0,
+        FatigueLevel.LOW,
+        0.0,
+        ts
+    );
+  }
+
+
+  /** Returned during baseline calibration */
   public static FatigueResult calibrating(
-    double left,
-    double right,
-    double avg,
-    long ts
+      double leftEAR,
+      double rightEAR,
+      double avgEAR,
+      long timestamp
   ) {
     return new FatigueResult(
-      true,         // faceDetected
-      true,         // isCalibrating
-      left,
-      right,
-      avg,
-      false,        // blinkDetected
-      0,            // blinkRate
-      -1,           // blinkEntropy
-      0,            // perclos
-      FatigueLevel.LOW,
-      0,            // confidence
-      ts
+        true,
+        true,
+        leftEAR,
+        rightEAR,
+        avgEAR,
+        false,
+        0.0,
+        -1.0,
+        0.0,
+        FatigueLevel.LOW,
+        0.0,
+        timestamp
     );
   }
 }

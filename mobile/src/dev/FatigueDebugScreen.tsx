@@ -12,22 +12,26 @@ import {
   clearLogs,
 } from "../storage/fatigueStorage";
 
+
 /**
  * DEV-ONLY SCREEN
  * Purpose:
- * - Inspect what you are ACTUALLY logging
- * - Validate confidence, fatigue stability, baseline success
- * - Catch data poisoning early
+ * - Inspect real logged data
+ * - Catch baseline + confidence issues safely
  */
 export default function FatigueDebugScreen() {
   const [session, setSession] = useState<any | null>(null);
   const [windows, setWindows] = useState<any[]>([]);
 
   const reload = async () => {
-    const s = await getSessionSummaries(); // single object
-    const w = await getWindowLogs();       // array
-    setSession(s);
-    setWindows([...w].reverse());
+    try {
+      const s = await getSessionSummaries();
+      const w = await getWindowLogs();
+      setSession(s ?? null);
+      setWindows(Array.isArray(w) ? [...w].reverse() : []);
+    } catch (e) {
+      console.warn("Debug reload failed", e);
+    }
   };
 
   useEffect(() => {
@@ -35,20 +39,36 @@ export default function FatigueDebugScreen() {
   }, []);
 
   // --------------------
-  // Data quality metrics
+  // Data quality metrics (SAFE)
   // --------------------
   const totalWindows = windows.length;
 
   const noFaceRate =
     totalWindows === 0
       ? 0
-      : windows.filter(w => !w.fatigue?.faceDetected).length / totalWindows;
+      : windows.filter(w => w?.fatigue?.faceDetected === false).length /
+        totalWindows;
 
   const lowConfidenceRate =
     totalWindows === 0
       ? 0
-      : windows.filter(w => w.fatigue?.confidence < 0.4).length / totalWindows;
+      : windows.filter(
+          w => typeof w?.fatigue?.confidence === "number" &&
+               w.fatigue.confidence < 0.4
+        ).length / totalWindows;
 
+  // --------------------
+  // Helpers
+  // --------------------
+  const fmtPct = (v?: number, digits = 1) =>
+    typeof v === "number" && !isNaN(v) ? (v * 100).toFixed(digits) : "–";
+
+  const fmtNum = (v?: number, digits = 2) =>
+    typeof v === "number" && !isNaN(v) ? v.toFixed(digits) : "–";
+
+  // --------------------
+  // Render
+  // --------------------
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.title}>🧪 Fatigue Debug Console</Text>
@@ -64,10 +84,10 @@ export default function FatigueDebugScreen() {
       <Text style={styles.section}>Data Quality</Text>
       <View style={styles.card}>
         <Text style={styles.row}>
-          No-face rate: {(noFaceRate * 100).toFixed(1)}%
+          No-face rate: {fmtPct(noFaceRate)}%
         </Text>
         <Text style={styles.row}>
-          Low-confidence windows: {(lowConfidenceRate * 100).toFixed(1)}%
+          Low-confidence windows: {fmtPct(lowConfidenceRate)}%
         </Text>
         <Text style={styles.row}>
           Total windows: {totalWindows}
@@ -85,21 +105,23 @@ export default function FatigueDebugScreen() {
 
       {session && (
         <View style={styles.card}>
-          <Text style={styles.row}>Session: {session.sessionId}</Text>
           <Text style={styles.row}>
-            Duration: {(session.durationMs / 1000).toFixed(1)}s
+            Session: {session.sessionId ?? "–"}
           </Text>
           <Text style={styles.row}>
-            Avg confidence: {session.avgConfidence.toFixed(2)}
+            Duration: {fmtNum(session.durationMs / 1000, 1)}s
           </Text>
           <Text style={styles.row}>
-            Peak fatigue: {session.peakFatigueLevel}
+            Avg confidence: {fmtNum(session.avgConfidence)}
+          </Text>
+          <Text style={styles.row}>
+            Peak fatigue: {session.peakFatigueLevel ?? "–"}
           </Text>
           <Text style={styles.row}>
             Distribution →
-            L:{(session.fatigueDistribution.LOW * 100).toFixed(0)}% |
-            M:{(session.fatigueDistribution.MEDIUM * 100).toFixed(0)}% |
-            H:{(session.fatigueDistribution.HIGH * 100).toFixed(0)}%
+            L:{fmtPct(session?.fatigueDistribution?.LOW, 0)}% |
+            M:{fmtPct(session?.fatigueDistribution?.MEDIUM, 0)}% |
+            H:{fmtPct(session?.fatigueDistribution?.HIGH, 0)}%
           </Text>
           <Text style={styles.row}>
             Baseline: {session.baselineSuccessful ? "✅ OK" : "❌ FAILED"}
@@ -113,24 +135,26 @@ export default function FatigueDebugScreen() {
       <Text style={styles.section}>🪟 Windows (last 20)</Text>
 
       {windows.slice(0, 20).map((w, i) => {
-        const f = w.fatigue;
+        const f = w?.fatigue;
         if (!f) return null;
 
         return (
           <View key={i} style={styles.window}>
-            <Text style={styles.row}>Session: {w.sessionId}</Text>
-            <Text style={styles.row}>Fatigue: {f.fatigueLevel}</Text>
+            <Text style={styles.row}>Session: {w.sessionId ?? "–"}</Text>
+            <Text style={styles.row}>Fatigue: {f.fatigueLevel ?? "–"}</Text>
             <Text style={styles.row}>
-              Confidence: {f.confidence.toFixed(2)}
+              Confidence: {fmtNum(f.confidence)}
             </Text>
             <Text style={styles.row}>
-              Blink/min: {f.blinkRate.toFixed(1)}
+              Blink/min: {fmtNum(f.blinkRate, 1)}
             </Text>
             <Text style={styles.row}>
-              PERCLOS: {f.perclos.toFixed(2)}
+              PERCLOS: {fmtNum(f.perclos)}
             </Text>
             <Text style={styles.row}>
-              Time: {new Date(w.timestamp).toLocaleTimeString()}
+              Time: {w.timestamp
+                ? new Date(w.timestamp).toLocaleTimeString()
+                : "–"}
             </Text>
           </View>
         );

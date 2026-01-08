@@ -7,7 +7,7 @@ export type SessionSummary = any;
 // In-memory stores (Phase-1)
 // -------------------------
 let windowLogs: WindowLog[] = [];
-let sessionSummary: SessionSummary | null = null;
+let sessionSummaries: SessionSummary [] = [];
 
 // -------------------------
 // Window-level logging
@@ -20,7 +20,7 @@ export function storeWindowLog(log: WindowLog) {
 // Session-level logging
 // -------------------------
 export function storeSessionSummary(summary: SessionSummary) {
-  sessionSummary = summary;
+  sessionSummaries.push(summary);
 }
 
 // -------------------------
@@ -30,14 +30,14 @@ export async function getWindowLogs(): Promise<WindowLog[]> {
   return windowLogs;
 }
 
-export async function getSessionSummaries(): Promise<SessionSummary | null> {
-  return sessionSummary;
+export async function getSessionSummaries() {
+  return sessionSummaries;
 }
 
 // -------------------------
 // Dev-only reset
 // -------------------------
 export async function clearLogs() {
-  windowLogs = [];
-  sessionSummary = null;
+  windowLogs.length = 0;
+  sessionSummaries.length = 0;
 }

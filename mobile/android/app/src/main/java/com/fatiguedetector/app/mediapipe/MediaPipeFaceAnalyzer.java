@@ -1,11 +1,9 @@
 package com.fatiguedetector.app.mediapipe;
 
-import com.fatiguedetector.app.mediapipe.FatigueResult;
-import com.fatiguedetector.app.mediapipe.MediaPipeFaceLandmarker;
-import com.fatiguedetector.app.mediapipe.FatigueLevel;
 import android.content.Context;
 import android.graphics.Bitmap;
 
+import com.fatiguedetector.app.BuildConfig;
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult;
 
@@ -13,12 +11,10 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 
-import com.fatiguedetector.app.BuildConfig;
-
 public class MediaPipeFaceAnalyzer {
 
   // =====================================================
-  // STEP 1–6 — THRESHOLDS (TUNED)
+  // THRESHOLDS
   // =====================================================
   private static final double NORM_EAR_HIGH = 0.80;
   private static final double NORM_EAR_LOW  = 0.65;
@@ -29,72 +25,54 @@ public class MediaPipeFaceAnalyzer {
   private static final int BLINK_MED  = 15;
   private static final int BLINK_HIGH = 25;
 
+  private static final long FACE_LOST_GRACE_MS = 1000;
+
   // =====================================================
-  // STEP 7.1 / 7.4½ — WINDOW CONFIG
+  // WINDOWS
   // =====================================================
   private static final long WINDOW_MS = 20_000;
   private static final int MIN_FRAMES_FOR_PERCLOS = 15;
 
   // =====================================================
-  // BLINK DETECTION (FIXED)
+  // BLINK
   // =====================================================
   private static final int MIN_CLOSED_FRAMES = 1;
   private static final int MAX_BLINK_FRAMES = 6;
   private static final double BLINK_EAR_RATIO = 0.65;
-  private static final int MAX_EAR_FRAMES = 30;
 
   // =====================================================
-  // STEP 7.4 — ANTI-FAKE TEMPORAL
+  // BASELINE
   // =====================================================
-  private static final long LOW_EAR_PERSIST_MS = 3000;
-  private static final long BLINK_BLOCK_MS = 2000;
+  private static final long BASELINE_WINDOW_MS = 3_000;
+  private static final int MIN_BASELINE_FRAMES = 8;
+  private static final int MIN_FRAMES_AFTER_BASELINE = 5;
 
   // =====================================================
-  // STEP 7.5 — BASELINE CALIBRATION
+  // DEBUG
   // =====================================================
-  private static final long BASELINE_WINDOW_MS = 4_000;
-  private static final int MIN_BASELINE_FRAMES = 5;
-  private static final int MIN_FRAMES_AFTER_BASELINE = 10;
-
-  // =====================================================
-  // STEP 7.6 — LIVENESS ENTROPY
-  // =====================================================
-  private static final int MIN_BLINKS_FOR_ENTROPY = 4;
-  private static final double MIN_LIVENESS_ENTROPY = 0.9;
-
-  // =====================================================
-  // DEBUG FLAG (TEMPORARY)
-  // =====================================================
-  private static final boolean DEBUG_7X = BuildConfig.DEBUG; // ⛔ disable before release
+  private static final boolean DEBUG_7X = BuildConfig.DEBUG;
 
   // =====================================================
   // STATE
   // =====================================================
   private int closedFrameCount = 0;
-  private long lowEARStartTs = -1;
   private long lastBlinkTs = -1;
+  private int framesAfterBaseline = 0;
+  private long lastFaceSeenTs = -1;
 
   private final Deque<Long> blinkTimestamps = new ArrayDeque<>();
   private final Deque<Boolean> eyeClosedFrames = new ArrayDeque<>();
   private final Deque<Long> frameTimestamps = new ArrayDeque<>();
-
+  private final Deque<Double> earHistory = new ArrayDeque<>();  
   private final Deque<Double> baselineEARs = new ArrayDeque<>();
   private long baselineStartTs = -1;
   private Double baselineEAR = null;
 
   // =====================================================
-  // MEDIAPIPE OWNER (INJECTED)
+  // MEDIAPIPE
   // =====================================================
   private final MediaPipeFaceLandmarker landmarker;
 
-  // =====================================================
-  // Normalized EAR Rolling Window 
-  // =====================================================
-  private final Deque<Double> normalizedEARFrames = new ArrayDeque<>();
-  
-  // =====================================================
-  // INIT
-  // =====================================================
   public MediaPipeFaceAnalyzer(Context context) {
     landmarker = new MediaPipeFaceLandmarker(context);
   }
@@ -115,62 +93,40 @@ public class MediaPipeFaceAnalyzer {
     double v1 = dist(lm.get(p2), lm.get(p6));
     double v2 = dist(lm.get(p3), lm.get(p5));
     double h  = dist(lm.get(p1), lm.get(p4));
-    return h == 0 ? 0.0 : (v1 + v2) / (2.0 * h);
+    return h <= 0 ? 0.0 : (v1 + v2) / (2.0 * h);
   }
 
-  // =====================================================
-  // STEP 7.6 — BLINK ENTROPY
-  // =====================================================
   private static double computeBlinkEntropy(Deque<Long> ts) {
-    if (ts.size() < MIN_BLINKS_FOR_ENTROPY) return 0.0;
-
+    if (ts.size() < 4) return 0.0;
     Long[] t = ts.toArray(new Long[0]);
-    double[] intervals = new double[t.length - 1];
-
+    double sum = 0;
     for (int i = 1; i < t.length; i++) {
-      intervals[i - 1] = t[i] - t[i - 1];
+      sum += Math.log(t[i] - t[i - 1] + 1);
     }
-
-    int buckets = 5;
-    int[] counts = new int[buckets];
-
-    double mean = 0;
-    for (double v : intervals) mean += v;
-    mean /= intervals.length;
-
-    
-    for (double v : intervals) {
-      double ratio = mean > 0 ? v / mean : 1.0;
-      int idx = (int) Math.min(buckets - 1, ratio * 2);
-      counts[idx]++;
-    }
-
-    double entropy = 0.0;
-    for (int c : counts) {
-      if (c == 0) continue;
-      double p = (double) c / intervals.length;
-      entropy -= p * Math.log(p);
-    }
-    return entropy;
+    return sum / (t.length - 1);
   }
 
   // =====================================================
   // MAIN ANALYSIS
   // =====================================================
   public FatigueResult analyze(Bitmap bitmap) {
-    if (bitmap == null) { 
-      return FatigueResult.noFace(System.currentTimeMillis()); 
-    }
-    FaceLandmarkerResult result = landmarker.processBitmap(bitmap);
-
-     
     long now = System.currentTimeMillis();
 
-    // Face lost → reset temporal trust (baseline + confidence)
-    if (result == null || result.faceLandmarks().isEmpty()) {
-      resetState();
+    if (bitmap == null) {
       return FatigueResult.noFace(now);
     }
+
+    FaceLandmarkerResult result = landmarker.processBitmap(bitmap);
+
+    if (result == null || result.faceLandmarks().isEmpty()) {
+      if (lastFaceSeenTs > 0 &&
+          now - lastFaceSeenTs < FACE_LOST_GRACE_MS) {
+        return FatigueResult.hold(now);
+      }
+      return FatigueResult.noFace(now);
+    }
+
+    lastFaceSeenTs = now;
 
     List<NormalizedLandmark> lm = result.faceLandmarks().get(0);
 
@@ -178,13 +134,13 @@ public class MediaPipeFaceAnalyzer {
     double rightEAR = computeEAR(lm, 362, 385, 387, 263, 373, 380);
     double avgEAR   = (leftEAR + rightEAR) / 2.0;
 
-    // ============================
-    // STEP 7.5 — BASELINE
-    // ============================
+    // =====================================================
+    // BASELINE
+    // =====================================================
     if (baselineEAR == null) {
       if (baselineStartTs < 0) baselineStartTs = now;
 
-      if (avgEAR > 0.12 && avgEAR < 0.45) {
+      if (avgEAR > 0.15 && avgEAR < 0.35) {
         baselineEARs.addLast(avgEAR);
       }
 
@@ -193,37 +149,34 @@ public class MediaPipeFaceAnalyzer {
 
         double sum = 0;
         for (double v : baselineEARs) sum += v;
-        baselineEAR = sum / baselineEARs.size();
+        baselineEAR = Math.max(0.18, sum / baselineEARs.size());
+
         baselineEARs.clear();
+        framesAfterBaseline = 0;
+
+        if (DEBUG_7X) {
+          android.util.Log.d("Fatigue", "Baseline locked: " + baselineEAR);
+        }
       }
 
       return FatigueResult.calibrating(leftEAR, rightEAR, avgEAR, now);
     }
-    
-    double normalizedEAR = baselineEAR > 0 ? avgEAR / baselineEAR : 1.0;
 
-    // ============================
-    // STEP 7.4 — SUSTAINED LOW EAR
-    // ============================
-    boolean sustainedLowEAR = false;
-    if (normalizedEAR < NORM_EAR_LOW) {
-      if (lowEARStartTs < 0) lowEARStartTs = now;
-      else if (now - lowEARStartTs >= LOW_EAR_PERSIST_MS) sustainedLowEAR = true;
-    } else {
-      lowEARStartTs = -1;
+    // =====================================================
+    // POST-BASELINE
+    // =====================================================
+    framesAfterBaseline++;
+
+    double normalizedEAR = avgEAR / baselineEAR;
+    normalizedEAR = Math.max(0.3, Math.min(1.3, normalizedEAR));
+    if (framesAfterBaseline >= MIN_FRAMES_AFTER_BASELINE) {
+      earHistory.addLast(normalizedEAR);
     }
-
-    // ============================
-    // BLINK DETECTION (FIXED)
-    // ============================
-    boolean blinkDetected = false;
     boolean eyeClosed = normalizedEAR < BLINK_EAR_RATIO;
+    boolean blinkDetected = false;
 
     if (eyeClosed) {
       closedFrameCount++;
-      if (closedFrameCount > MAX_BLINK_FRAMES) {
-        closedFrameCount = MAX_BLINK_FRAMES + 1;
-      }
     } else {
       if (closedFrameCount >= MIN_CLOSED_FRAMES &&
           closedFrameCount <= MAX_BLINK_FRAMES) {
@@ -234,59 +187,53 @@ public class MediaPipeFaceAnalyzer {
       closedFrameCount = 0;
     }
 
-    // ============================
-    // STEP 7.4½ — ROLLING WINDOW
-    // ============================
-    if (normalizedEARFrames.size() >= MAX_EAR_FRAMES) {
-        normalizedEARFrames.pollFirst();
-      }
-    normalizedEARFrames.addLast(normalizedEAR);
-
     frameTimestamps.addLast(now);
     eyeClosedFrames.addLast(eyeClosed);
     evictOld(now);
 
     int closed = 0;
-    for (Boolean b : eyeClosedFrames) if (b) closed++;
+    for (boolean b : eyeClosedFrames) if (b) closed++;
 
-    double perclos = frameTimestamps.size() >= MIN_FRAMES_FOR_PERCLOS
-        ? (double) closed / frameTimestamps.size()
-        : 0.0;
+    double perclos =
+        frameTimestamps.size() >= MIN_FRAMES_FOR_PERCLOS
+            ? (double) closed / frameTimestamps.size()
+            : 0.0;
 
-    double blinkRate = blinkTimestamps.size() * (60_000.0 / WINDOW_MS);
-    blinkRate = Math.max(0, Math.min(60, blinkRate)); // cap to avoid extreme values
-    boolean recentBlink =
-        lastBlinkTs > 0 && (now - lastBlinkTs) < BLINK_BLOCK_MS;
+    long windowStart = frameTimestamps.peekFirst();
+    double effectiveWindowMs =
+        Math.max(1, Math.min(WINDOW_MS, now - windowStart));
 
-    double earMean = 0.0;
-    for (double v : normalizedEARFrames) earMean += v;
-    earMean /= Math.max(1, normalizedEARFrames.size());
+    double blinkRate =
+        blinkTimestamps.size() * (60_000.0 / effectiveWindowMs);
+    double earVariance = computeVariance(earHistory);
 
-    double earVariance = 0.0;
-    for (double v : normalizedEARFrames) {
-      double d = v  - earMean;
-      earVariance += d * d;
+    /**
+     * Expected behavior:
+     * - Stable EAR variance ≈ 0.002–0.006
+     * - Erratic / jittery ≥ 0.015
+     */
+    double stabilityScore;
+
+    if (earHistory.size() < 8) {
+      stabilityScore = 1.0;
+    } else if (earVariance <= 0.006) {
+      stabilityScore = 1.0;
+    } else if (earVariance >= 0.02) {
+      stabilityScore = 0.4; // hard distrust
+    } else {
+      // smooth linear falloff
+      stabilityScore =
+          1.0 - ((earVariance - 0.006) / (0.02 - 0.006)) * 0.6;
     }
-    earVariance /= Math.max(1, normalizedEARFrames.size());
 
-    boolean unstableSignal = earVariance > 0.015;
-
-    // ============================
-    // STEP 7.6 — LIVENESS
-    // ============================
-    //BlinkTimestamps are already evicted to WINDOW_MS
-    double blinkEntropy = computeBlinkEntropy(blinkTimestamps);
-    boolean lowLiveness =
-      blinkEntropy > 0 &&
-      blinkTimestamps.size() >= MIN_BLINKS_FOR_ENTROPY &&
-      blinkEntropy < MIN_LIVENESS_ENTROPY;
-
-    // ============================
+    // =====================================================
     // CLASSIFICATION
-    // ============================
+    // =====================================================
     FatigueLevel fatigueLevel = FatigueLevel.LOW;
 
-    if (sustainedLowEAR || perclos >= PERCLOS_HIGH || blinkRate > BLINK_HIGH) {
+    if (normalizedEAR < NORM_EAR_LOW ||
+        perclos >= PERCLOS_HIGH ||
+        blinkRate > BLINK_HIGH) {
       fatigueLevel = FatigueLevel.HIGH;
     } else if (normalizedEAR < NORM_EAR_HIGH ||
                perclos >= PERCLOS_MED ||
@@ -294,88 +241,86 @@ public class MediaPipeFaceAnalyzer {
       fatigueLevel = FatigueLevel.MEDIUM;
     }
 
-    if (recentBlink && fatigueLevel == FatigueLevel.HIGH) {
-      fatigueLevel = FatigueLevel.MEDIUM;
+    // =====================================================
+    // CONFIDENCE
+    // =====================================================
+    double confidence;
+
+    boolean isCalibrating =
+        framesAfterBaseline < MIN_FRAMES_AFTER_BASELINE;
+
+    if (isCalibrating) {
+      confidence = 0.0;
+    } else {
+      double temporalScore = Math.min(1.0, framesAfterBaseline / 30.0);
+      double stateScore = fatigueLevel == FatigueLevel.LOW ? 0.5 : 1.0;
+      double rawConfidence =
+        0.5 * temporalScore + 0.5 * stateScore;
+
+      confidence = Math.min(1.0, rawConfidence * stabilityScore);
     }
 
-    if (lowLiveness && fatigueLevel == FatigueLevel.HIGH) {
-      fatigueLevel = FatigueLevel.MEDIUM;
-    }
-    double temporalScore = Math.min(1.0, frameTimestamps.size() / 30.0);
-    double stateScore = (fatigueLevel != FatigueLevel.LOW) ? 1.0 : 0.0;
-    double stabilityPenalty = unstableSignal ? 0.5 : 1.0;
-
-    double confidence = Math.min(
-        1.0,
-        (0.5 * temporalScore + 0.5 * stateScore) * stabilityPenalty
-    );
-
-    /*double confidence = Math.min(
-        1.0,
-        0.5 * (frameTimestamps.size() / 30.0) +
-        0.5 * ((fatigueLevel != FatigueLevel.LOW ? 1 : 0))
-    );*/
-    
-    if (frameTimestamps.size() < MIN_FRAMES_AFTER_BASELINE) {
-      return new FatigueResult(
-      true,
-      leftEAR,
-      rightEAR,
-      avgEAR,
-      blinkDetected,
-      blinkRate,
-      DEBUG_7X ? blinkEntropy : -1.0,
-      perclos,
-      fatigueLevel,
-      confidence,
-      now
+    return new FatigueResult(
+        true,
+        isCalibrating,
+        leftEAR,
+        rightEAR,
+        avgEAR,
+        blinkDetected,
+        blinkRate,
+        DEBUG_7X ? computeBlinkEntropy(blinkTimestamps) : -1.0,
+        perclos,
+        fatigueLevel,
+        confidence,
+        now
     );
   }
 
-// ✅ FINAL RETURN (steady-state)
-return new FatigueResult(
-  true,
-  leftEAR,
-  rightEAR,
-  avgEAR,
-  blinkDetected,
-  blinkRate,
-  DEBUG_7X ? blinkEntropy : -1.0,
-  perclos,
-  fatigueLevel,
-  confidence,
-  now
-  );
-}
-
+  // =====================================================
+  // EVICTION
+  // =====================================================
   private void evictOld(long now) {
     while (!frameTimestamps.isEmpty() &&
-          now - frameTimestamps.peekFirst() > WINDOW_MS) {
-
+           now - frameTimestamps.peekFirst() > WINDOW_MS) {
       frameTimestamps.pollFirst();
       eyeClosedFrames.pollFirst();
-
-      if (!normalizedEARFrames.isEmpty()) {
-        normalizedEARFrames.pollFirst();
-      }
+      earHistory.pollFirst();
     }
 
     while (!blinkTimestamps.isEmpty() &&
-          now - blinkTimestamps.peekFirst() > WINDOW_MS) {
+           now - blinkTimestamps.peekFirst() > WINDOW_MS) {
       blinkTimestamps.pollFirst();
     }
   }
 
+  private static double computeVariance(Deque<Double> values) {
+    if (values.size() < 5) return 0.0;
 
+    double mean = 0;
+    for (double v : values) mean += v;
+    mean /= values.size();
+
+    double var = 0;
+    for (double v : values) {
+      double d = v - mean;
+      var += d * d;
+    }
+    return var / values.size();
+  }
+
+  // =====================================================
+  // RESET
+  // =====================================================
   public void resetState() {
     closedFrameCount = 0;
-    lowEARStartTs = -1;
     lastBlinkTs = -1;
+    framesAfterBaseline = 0;
+    lastFaceSeenTs = -1;
 
     blinkTimestamps.clear();
     eyeClosedFrames.clear();
     frameTimestamps.clear();
-    normalizedEARFrames.clear();
+    earHistory.clear();              
 
     baselineEARs.clear();
     baselineEAR = null;
